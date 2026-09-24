@@ -1,211 +1,69 @@
-import streamlit as st
-from scapy.all import sniff, Ether, IP, TCP, UDP
-import pandas as pd
-import plotly.express as px
-import joblib
-import os
-import socket
+# 🌐 Real-Time Network Traffic Analyzer
 
-class TrafficAnalyzer:
-    def __init__(self, max_packets=100):
-        self.packets = []
-        self.counter = 0
-        self.max_packets = max_packets
+A live network traffic dashboard built with Scapy and Streamlit. Captures packets in real time, resolves IPs/ports to readable names, visualizes protocol and traffic breakdowns, and flags source IPs that show port-scanning behavior.
 
-    def packet_handler(self, packet):
-        self.counter += 1
-        entry = {
-            'timestamp': packet.time,
-            'protocol': packet[IP].proto if IP in packet else None,
-            'src_ip': packet[IP].src if IP in packet else None,
-            'dst_ip': packet[IP].dst if IP in packet else None,
-            'size': len(packet)
-        }
-        if TCP in packet:
-            entry.update({'src_port': packet[TCP].sport, 'dst_port': packet[TCP].dport})
-        elif UDP in packet:
-            entry.update({'src_port': packet[UDP].sport, 'dst_port': packet[UDP].dport})
-        else:
-            entry.update({'src_port': None, 'dst_port': None})
-        self.packets.append(entry)
+## Features
 
-    def stop_filter(self, packet):
-        return self.counter >= self.max_packets
+- **Live packet capture** using Scapy, with a configurable packet limit per session
+- **Protocol, IP, and port breakdown** — extracts protocol, source/destination IP, ports, and packet size from every captured packet
+- **Human-readable resolution** — converts raw IPs and ports into hostnames and service names (e.g. `443` → `https`), with results cached so repeated lookups are instant
+- **Port-scan detection** — flags any source IP that contacts an unusually high number of distinct destination ports, with an adjustable sensitivity threshold
+- **Interactive dashboard** — protocol distribution pie chart, top source/destination IPs and ports, and a sortable raw packet table, all built with Plotly and Streamlit
+- **Save/reload captures** — persist a capture session to disk and reload it later without needing to re-sniff traffic
 
-def save_packets(packets, filename):
-    joblib.dump(packets, filename)
+## Project Structure
 
-def load_packets(filename):
-    return joblib.load(filename)
+```
+.
+├── app.py           # Streamlit UI — sidebar controls, charts, tables
+├── analyzer.py       # TrafficAnalyzer — packet capture logic
+├── utils.py          # Caching, IP/port resolution, port-scan detection, save/load
+└── requirements.txt
+```
 
-def get_port_service(port):
-    try:
-        if pd.isna(port):
-            return ""
-        return socket.getservbyport(int(port))
-    except Exception:
-        return str(port)
+Capture logic, business logic, and presentation are kept separate — `analyzer.py` and `utils.py` have no Streamlit dependency, so the same logic could sit behind a different UI (e.g. Flask or FastAPI) without changes.
 
-def resolve_ip(ip):
-    try:
-        if pd.isna(ip) or ip is None:
-            return ""
-        return socket.gethostbyaddr(ip)[0]
-    except Exception:
-        return ip
+## Setup
 
-def main():
-    st.set_page_config(page_title="Network Traffic Analyzer", layout="wide")
-    st.title("🌐 Real-Time Network Traffic Analyzer")
+**Requirements:** Python 3.9+
 
-    if 'analyzer' not in st.session_state:
-        st.session_state.analyzer = None
+### Using pip
 
-    with st.sidebar:
-        st.header("Settings")
-        max_packets = st.number_input("Packets to capture", 10, 1000, 100)
-        start_capture = st.button("🚀 Start Capture")
-        save_file = st.text_input("Filename to save/load", value="packets.joblib")
-        if st.button("💾 Save Captured Packets"):
-            if st.session_state.analyzer and st.session_state.analyzer.packets:
-                save_packets(st.session_state.analyzer.packets, save_file)
-                st.success(f"Packets saved to {save_file}")
-            else:
-                st.warning("No packets to save.")
-        if st.button("📂 Load Packets from File"):
-            if os.path.exists(save_file):
-                loaded_packets = load_packets(save_file)
-                analyzer = TrafficAnalyzer(max_packets=len(loaded_packets))
-                analyzer.packets = loaded_packets
-                analyzer.counter = len(loaded_packets)
-                st.session_state.analyzer = analyzer
-                st.success(f"Loaded {len(loaded_packets)} packets from {save_file}")
-            else:
-                st.error(f"File {save_file} not found.")
+```bash
+python -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-    if start_capture:
-        st.session_state.analyzer = TrafficAnalyzer(max_packets)
-        with st.spinner(f"Capturing {max_packets} packets..."):
-            sniff(prn=st.session_state.analyzer.packet_handler,
-                  filter="ip",
-                  store=0,
-                  stop_filter=st.session_state.analyzer.stop_filter)
-        st.success("Capture complete!")
+### Using uv
 
-    if st.session_state.analyzer and st.session_state.analyzer.packets:
-        analyzer = st.session_state.analyzer
-        df = pd.DataFrame(analyzer.packets)
+```bash
+uv venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
+```
 
-        protocol_map = {6: 'TCP', 17: 'UDP', 1: 'ICMP'}
-        df['protocol_name'] = df['protocol'].map(protocol_map).fillna('Other')
+### Platform notes for packet capture
 
-        st.header(f"📊 Traffic Summary ({len(df)} packets analyzed)")
+Scapy needs raw socket access to sniff packets:
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Average Packet Size", f"{df['size'].mean():.1f} bytes")
-        with col2:
-            st.metric("Unique Source IPs", df['src_ip'].nunique())
-        with col3:
-            st.metric("Unique Ports", pd.concat([df['src_port'], df['dst_port']]).nunique())
+- **Linux/macOS:** run the app with elevated permissions
+- **Windows:** install [Npcap](https://npcap.com/) first
 
-        st.subheader("Protocol Distribution")
-        protocol_counts = df['protocol_name'].value_counts()
-        fig = px.pie(protocol_counts,
-                     names=protocol_counts.index,
-                     values=protocol_counts.values)
-        st.plotly_chart(fig, use_container_width=True)
+## Running
 
-        col4, col5 = st.columns(2)
+```bash
+sudo streamlit run app.py   # Linux/macOS
+streamlit run app.py        # Windows, after Npcap is installed
+```
 
-        with col4:
-            st.subheader("🔝 Top Source IPs")
-            top_src_ips = df['src_ip'].value_counts().head(10)
-            src_ip_df = pd.DataFrame({
-                'ip': top_src_ips.index,
-                'count': top_src_ips.values
-            })
-            src_ip_df['hostname'] = src_ip_df['ip'].apply(resolve_ip)
-            src_ip_df['label'] = src_ip_df.apply(lambda x: f"{x['ip']} ({x['hostname']})" if x['hostname'] != x['ip'] else x['ip'], axis=1)
-            fig = px.bar(src_ip_df,
-                         x='label',
-                         y='count',
-                         labels={'count': 'Count', 'label': 'Source IP (Hostname)'},
-                         hover_data={'hostname': True, 'ip': True, 'label': False})
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(src_ip_df.rename(columns={'ip': 'IP Address', 'hostname': 'Hostname', 'count': 'Count'}),
-                         hide_index=True,
-                         use_container_width=True)
+Open the URL Streamlit prints (usually `http://localhost:8501`), set your packet limit and port-scan threshold in the sidebar, and click **Start Capture**.
 
-        with col5:
-            st.subheader("🎯 Top Destination IPs")
-            top_dst_ips = df['dst_ip'].value_counts().head(10)
-            dst_ip_df = pd.DataFrame({
-                'ip': top_dst_ips.index,
-                'count': top_dst_ips.values
-            })
-            dst_ip_df['hostname'] = dst_ip_df['ip'].apply(resolve_ip)
-            dst_ip_df['label'] = dst_ip_df.apply(lambda x: f"{x['ip']} ({x['hostname']})" if x['hostname'] != x['ip'] else x['ip'], axis=1)
-            fig = px.bar(dst_ip_df,
-                         x='label',
-                         y='count',
-                         labels={'count': 'Count', 'label': 'Destination IP (Hostname)'},
-                         hover_data={'hostname': True, 'ip': True, 'label': False})
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(dst_ip_df.rename(columns={'ip': 'IP Address', 'hostname': 'Hostname', 'count': 'Count'}),
-                         hide_index=True,
-                         use_container_width=True)
+## How Port-Scan Detection Works
 
-        with col4:
-            st.subheader("🔝 Top Source Ports")
-            top_src_ports = df['src_port'].value_counts().head(10)
-            src_port_df = pd.DataFrame({
-                'port': top_src_ports.index,
-                'count': top_src_ports.values
-            })
-            src_port_df['service'] = src_port_df['port'].apply(get_port_service)
-            src_port_df['label'] = src_port_df.apply(lambda x: f"{x['port']} ({x['service']})", axis=1)
-            fig = px.bar(src_port_df,
-                         x='label',
-                         y='count',
-                         labels={'count': 'Count', 'label': 'Source Port (Service)'},
-                         hover_data={'service': True, 'port': True, 'label': False})
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(src_port_df.rename(columns={'port': 'Port', 'service': 'Service Name', 'count': 'Count'}),
-                         hide_index=True,
-                         use_container_width=True)
+For each captured source IP, the app counts the number of *distinct* destination ports it contacted. A typical client talks to a handful of ports (e.g. one for DNS, one for HTTPS); a port scanner touches many in a short window. Any source IP crossing the configurable threshold (default: 15 unique ports) is surfaced in a dedicated alert table at the top of the dashboard.
 
-        with col5:
-            st.subheader("🎯 Top Destination Ports")
-            top_dst_ports = df['dst_port'].value_counts().head(10)
-            dst_port_df = pd.DataFrame({
-                'port': top_dst_ports.index,
-                'count': top_dst_ports.values
-            })
-            dst_port_df['service'] = dst_port_df['port'].apply(get_port_service)
-            dst_port_df['label'] = dst_port_df.apply(lambda x: f"{x['port']} ({x['service']})", axis=1)
-            fig = px.bar(dst_port_df,
-                         x='label',
-                         y='count',
-                         labels={'count': 'Count', 'label': 'Destination Port (Service)'},
-                         hover_data={'service': True, 'port': True, 'label': False})
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(dst_port_df.rename(columns={'port': 'Port', 'service': 'Service Name', 'count': 'Count'}),
-                         hide_index=True,
-                         use_container_width=True)
+## Notes
 
-        st.subheader("📄 Raw Packet Data")
-        st.dataframe(df.sort_values('timestamp', ascending=False),
-                     height=300,
-                     column_config={
-                         'timestamp': 'Timestamp',
-                         'protocol_name': 'Protocol',
-                         'src_ip': 'Source IP',
-                         'dst_ip': 'Destination IP',
-                         'src_port': 'Source Port',
-                         'dst_port': 'Destination Port',
-                         'size': 'Size'
-                     })
-
-if __name__ == "__main__":
-    main()
+- Packet resolution (`resolve_ip`, `get_port_service`) is cached in-memory per run using `functools.lru_cache`, so the same IP or port is never looked up twice in a session.
+- Saved captures are stored via `joblib` and can be reloaded from the sidebar without re-running a live capture.
